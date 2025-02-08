@@ -1,0 +1,110 @@
+name: Build Kernel with KernelSU (TWRP Flashable ZIP)
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout code from repository
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      # Step 2: Set up the environment (install dependencies)
+      - name: Set up environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            bc \
+            libncurses5-dev \
+            libssl-dev \
+            libelf-dev \
+            bison \
+            flex \
+            git \
+            wget \
+            python3 \
+            python3-pip \
+            curl
+
+      # Step 3: Clone the KernelSU repository
+      - name: Clone KernelSU
+        run: |
+          git clone https://github.com/kernelex/kernelSU.git
+          cd kernelSU
+          git checkout master  # You can change this to another branch if you prefer
+
+      # Step 4: Set up KernelSU in your kernel directory
+      - name: Set up KernelSU in kernel directory
+        run: |
+          cd android_kernel_xiaomi_mt6877
+          cp -r ../kernelSU/* .  # Copy all KernelSU files into the kernel source directory
+
+      # Step 5: Configure the kernel (using defconfig or your custom config)
+      - name: Configure Kernel
+        run: |
+          cd android_kernel_xiaomi_mt6877
+          make ARCH=arm64 defconfig  # You can specify your own defconfig file if needed
+
+      # Step 6: Apply KernelSU Configuration to the kernel
+      - name: Apply KernelSU Configuration
+        run: |
+          cd android_kernel_xiaomi_mt6877
+          echo "CONFIG_KERNEL_SU=y" >> .config  # Enable KernelSU in the kernel config
+
+      # Step 7: Compile the kernel
+      - name: Compile Kernel
+        run: |
+          cd android_kernel_xiaomi_mt6877
+          make ARCH=arm64 -j$(nproc)  # Adjust this command based on your architecture
+
+      # Step 8: Prepare the kernel image and modules for TWRP flashable ZIP
+      - name: Prepare Kernel Image and Modules
+        run: |
+          cd android_kernel_xiaomi_mt6877
+          make ARCH=arm64 INSTALL_MOD_PATH=./out modules
+          make ARCH=arm64 INSTALL_MOD_PATH=./out dtbs
+
+      # Step 9: Create the required directory structure for TWRP flashable ZIP
+      - name: Prepare Flashable ZIP Directories
+        run: |
+          # Create the necessary directories for the TWRP flashable ZIP
+          mkdir -p ./out/package/system/lib/modules
+          mkdir -p ./out/package/boot
+          mkdir -p ./out/package/dtb
+
+          # Copy kernel image, modules, and dtbs into the package
+          cp android_kernel_xiaomi_mt6877/arch/arm64/boot/Image.gz-dtb ./out/package/boot/
+          cp -r android_kernel_xiaomi_mt6877/out/lib/modules/* ./out/package/system/lib/modules/
+          cp -r android_kernel_xiaomi_mt6877/arch/arm64/boot/dts/* ./out/package/dtb/
+
+      # Step 10: Create the TWRP updater script
+      - name: Create Update Script for TWRP
+        run: |
+          # Create the TWRP updater script that tells TWRP how to flash the kernel, modules, and dtb
+          echo "ui_print(\"Installing Kernel...\")" > ./out/package/META-INF/com/google/android/updater-script
+          echo "package_extract_file(\"boot/Image.gz-dtb\", \"/dev/block/bootdevice/by-name/boot\");" >> ./out/package/META-INF/com/google/android/updater-script
+          echo "package_extract_dir(\"system/lib/modules\", \"/system/lib/modules\");" >> ./out/package/META-INF/com/google/android/updater-script
+          echo "package_extract_dir(\"dtb\", \"/dtb\");" >> ./out/package/META-INF/com/google/android/updater-script
+          echo "ui_print(\"Kernel installation completed!\")" >> ./out/package/META-INF/com/google/android/updater-script
+
+      # Step 11: Create the flashable ZIP file
+      - name: Create Flashable ZIP
+        run: |
+          cd ./out/package
+          zip -r9 kernel_with_kernelsu.zip *  # Create the final flashable ZIP
+
+      # Step 12: Upload the flashable ZIP as an artifact
+      - name: Upload Flashable ZIP
+        uses: actions/upload-artifact@v2
+        with:
+          name: kernel_flashable_zip
+          path: ./out/package/kernel_with_kernelsu.zip
