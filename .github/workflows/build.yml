@@ -1,108 +1,202 @@
-name: Build Kernel with KernelSU (TWRP Flashable ZIP)
+name: Kernel Update with KernelSU for Dimensity 1080
 
 on:
   push:
     branches:
-      - main
-  pull_request:
-    branches:
-      - main
+      - "main"
+  workflow_dispatch:
+
+env:
+  KERNEL_DIR: ${{ github.workspace }}/android_kernel_xiaomi_mt6877
+  KERNEL_OUT: ${{ github.workspace }}/out
+  TOOLCHAIN_DIR: ${{ github.workspace }}/toolchain
+  DEVICE_NAME: ruby
+  KERNEL_CONFIG: arch/arm64/configs/ruby_defconfig
+  NDK_VERSION: r26b
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        job: [checkout, setup_build, build_kernel, create_artifacts]
 
     steps:
-      # Step 1: Checkout the repository code
-      - name: Checkout code
-        uses: actions/checkout@v2
+      - name: Checkout Kernel Source
+        if: matrix.job == 'checkout'
+        uses: actions/checkout@v4
+        with:
+          repository: "shirleybowman5412/android_kernel_xiaomi_mt6877"
+          path: android_kernel_xiaomi_mt6877
+          fetch-depth: 0
 
-      # Step 2: Set up the build environment (install dependencies)
-      - name: Set up build environment
+      - name: Initialize Git Submodules
+        if: matrix.job == 'checkout'
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: git submodule update --init --recursive
+
+      - name: Clone KernelSU
+        if: matrix.job == 'checkout'
+        run: |
+          git clone https://github.com/tiann/KernelSU.git ${{ env.KERNEL_DIR }}/KernelSU
+          echo "KernelSU_VERSION=$(cd ${{ env.KERNEL_DIR }}/KernelSU && git rev-parse --short HEAD)" >> $GITHUB_ENV
+          if [ -d "${{ env.KERNEL_DIR }}/KernelSU" ]; then
+            echo "KernelSU cloned successfully"
+            ls -la ${{ env.KERNEL_DIR }}/KernelSU
+          else
+            echo "Failed to clone KernelSU"
+            exit 1
+          fi
+
+      - name: Merge KernelSU
+        if: matrix.job == 'checkout'
+        run: |
+          if [ ! -d "${{ env.KERNEL_DIR }}" ]; then
+            echo "Kernel directory not found!"
+            exit 1
+          fi
+          
+          mkdir -p "${{ env.KERNEL_DIR }}/drivers/kernelsu"
+          cp -r ${{ env.KERNEL_DIR }}/KernelSU/kernel/* "${{ env.KERNEL_DIR }}/"
+          
+          if [ $? -ne 0 ]; then
+            echo "Failed to copy KernelSU kernel files"
+            exit 1
+          fi
+          
+          echo "obj-y += kernelsu/" >> "${{ env.KERNEL_DIR }}/drivers/Makefile"
+          ln -sf "$(pwd)/KernelSU/kernel/drivers/kernelsu" "${{ env.KERNEL_DIR }}/drivers/kernelsu"
+          
+          if [ -f "${{ env.KERNEL_DIR }}/Kconfig" ]; then
+            echo "source \"drivers/kernelsu/Kconfig\"" >> "${{ env.KERNEL_DIR }}/Kconfig"
+          else
+            echo "Kconfig not found in kernel directory!"
+            exit 1
+          fi
+          
+          echo "Current KernelSU integration status:"
+          ls -la "${{ env.KERNEL_DIR }}/drivers/kernelsu"
+
+      - name: Setup Build Environment
+        if: matrix.job == 'setup_build'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential \
             bc \
-            libncurses5-dev \
-            libssl-dev \
-            libelf-dev \
             bison \
+            build-essential \
+            ccache \
+            curl \
             flex \
-            git \
-            wget \
+            libelf-dev \
+            libssl-dev \
             python3 \
             python3-pip \
-            curl
+            zip
 
-      # Step 3: Clone KernelSU repository
-      - name: Clone KernelSU repository
+      - name: Setup Optimized Toolchain
+        if: matrix.job == 'setup_build'
         run: |
-          git clone https://github.com/kernelex/kernelSU.git
-          cd kernelSU
-          git checkout master  # You can change this to another branch if needed
+          mkdir -p ${{ env.TOOLCHAIN_DIR }}
+          cd ${{ env.TOOLCHAIN_DIR }}
+          wget -q https://dl.google.com/android/repository/android-ndk-${{ env.NDK_VERSION }}-linux.zip
+          unzip -q android-ndk-${{ env.NDK_VERSION }}-linux.zip
+          
+          NDK_PATH=${{ env.TOOLCHAIN_DIR }}/android-ndk-${{ env.NDK_VERSION }}
+          TOOLCHAIN_PATH=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64
+          
+          mkdir -p ${{ env.TOOLCHAIN_DIR }}/bin
+          ln -s $TOOLCHAIN_PATH/bin/clang ${{ env.TOOLCHAIN_DIR }}/bin/clang
+          ln -s $TOOLCHAIN_PATH/bin/clang++ ${{ env.TOOLCHAIN_DIR }}/bin/clang++
+          ln -s $TOOLCHAIN_PATH/bin/aarch64-linux-android-ar ${{ env.TOOLCHAIN_DIR }}/bin/aarch64-linux-gnu-ar
+          ln -s $TOOLCHAIN_PATH/bin/aarch64-linux-android-as ${{ env.TOOLCHAIN_DIR }}/bin/aarch64-linux-gnu-as
+          ln -s $TOOLCHAIN_PATH/bin/aarch64-linux-android-ld ${{ env.TOOLCHAIN_DIR }}/bin/aarch64-linux-gnu-ld
+          ln -s $TOOLCHAIN_PATH/bin/aarch64-linux-android-nm ${{ env.TOOLCHAIN_DIR }}/bin/aarch64-linux-gnu-nm
+          ln -s $TOOLCHAIN_PATH/bin/aarch64-linux-android-objcopy ${{ env.TOOLCHAIN_DIR }}/bin/aarch64-linux-gnu-objcopy
+          ln -s $TOOLCHAIN_PATH/bin/aarch64-linux-android-objdump ${{ env.TOOLCHAIN_DIR }}/bin/aarch64-linux-gnu-objdump
+          ln -s $TOOLCHAIN_PATH/bin/aarch64-linux-android-strip ${{ env.TOOLCHAIN_DIR }}/bin/aarch64-linux-gnu-strip
+          
+          rm android-ndk-${{ env.NDK_VERSION }}-linux.zip
+          echo "${{ env.TOOLCHAIN_DIR }}/bin" >> $GITHUB_PATH
 
-      # Step 4: Set up KernelSU in the kernel source directory
-      - name: Set up KernelSU in kernel source directory
+      - name: Build Kernel
+        if: matrix.job == 'build_kernel'
         run: |
-          cd android_kernel_xiaomi_mt6877
-          cp -r ../kernelSU/* .  # Copy KernelSU files into the kernel source tree
+          mkdir -p ${{ env.KERNEL_OUT }}
+          if [ ! -d ${{ env.KERNEL_DIR }} ]; then
+            echo "Kernel directory not found!"
+            exit 1
+          fi
+          cd ${{ env.KERNEL_DIR }}
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          
+          export USE_CCACHE=1
+          export CCACHE_DIR=${{ github.workspace }}/.ccache
+          export CCACHE_EXEC=$(which ccache)
+          ccache -M 5G
+          
+          make O=${{ env.KERNEL_OUT }} ARCH=arm64 ${env.KERNEL_CONFIG}
+          make -j$(nproc) O=${{ env.KERNEL_OUT }} \
+            ARCH=arm64 \
+            CC="ccache clang" \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip
 
-      # Step 5: Configure the kernel
-      - name: Configure kernel
+      - name: Create Boot Image
+        if: matrix.job == 'create_artifacts'
         run: |
-          cd android_kernel_xiaomi_mt6877
-          make ARCH=arm64 defconfig  # Use the appropriate defconfig file if necessary
+          mkdir -p boot
+          wget -q https://android.googlesource.com/platform/system/tools/mkbootimg/+archive/refs/heads/main.tar.gz
+          tar xf main.tar.gz
+          python3 mkbootimg.py \
+            --kernel ${{ env.KERNEL_OUT }}/arch/arm64/boot/Image.gz-dtb \
+            --ramdisk /dev/null \
+            --cmdline "androidboot.hardware=${{ env.DEVICE_NAME }} androidboot.selinux=permissive" \
+            --base 0x40078000 \
+            --pagesize 2048 \
+            --kernel_offset 0x00008000 \
+            --ramdisk_offset 0x07c08000 \
+            --tags_offset 0x0bc08000 \
+            --dtb_offset 0x0bc08000 \
+            --header_version 2 \
+            --output boot/boot.img
 
-      # Step 6: Enable KernelSU in kernel configuration
-      - name: Enable KernelSU in kernel config
+      - name: Create Flashable ZIP
+        if: matrix.job == 'create_artifacts'
         run: |
-          cd android_kernel_xiaomi_mt6877
-          echo "CONFIG_KERNEL_SU=y" >> .config  # Enable KernelSU in the kernel config
+          mkdir -p flashable
+          cp boot/boot.img flashable/
+          mkdir -p flashable/META-INF/com/google/android
+          wget -q https://github.com/topjohnwu/Magisk/raw/master/scripts/update-binary -O flashable/META-INF/com/google/android/update-binary
+          
+          cat > flashable/META-INF/com/google/android/updater-script <<EOF
+          #MAGISK
+          ui_print("KernelSU for ${{ env.DEVICE_NAME }}");
+          ui_print("Version: ${{ env.KernelSU_VERSION }}");
+          ui_print("Flashing kernel...");
+          package_extract_file("boot.img", "/dev/block/bootdevice/by-name/boot");
+          ui_print("Done!");
+          EOF
+          
+          cd flashable
+          zip -r9 ../KernelSU-${{ env.DEVICE_NAME }}-${{ env.KernelSU_VERSION }}.zip .
 
-      # Step 7: Compile the kernel
-      - name: Compile kernel
-        run: |
-          cd android_kernel_xiaomi_mt6877
-          make ARCH=arm64 -j$(nproc)  # Adjust based on your architecture (e.g., arm64)
-
-      # Step 8: Prepare the kernel image and modules for TWRP flashable ZIP
-      - name: Prepare kernel image and modules
-        run: |
-          cd android_kernel_xiaomi_mt6877
-          make ARCH=arm64 INSTALL_MOD_PATH=./out modules
-          make ARCH=arm64 INSTALL_MOD_PATH=./out dtbs
-
-      # Step 9: Create TWRP flashable ZIP structure
-      - name: Create directories for TWRP flashable ZIP
-        run: |
-          mkdir -p ./out/package/system/lib/modules
-          mkdir -p ./out/package/boot
-          mkdir -p ./out/package/dtb
-
-          # Copy kernel image, modules, and device tree to the package
-          cp android_kernel_xiaomi_mt6877/arch/arm64/boot/Image.gz-dtb ./out/package/boot/
-          cp -r android_kernel_xiaomi_mt6877/out/lib/modules/* ./out/package/system/lib/modules/
-          cp -r android_kernel_xiaomi_mt6877/arch/arm64/boot/dts/* ./out/package/dtb/
-
-      # Step 10: Create TWRP updater script
-      - name: Create updater script for TWRP
-        run: |
-          echo "ui_print(\"Installing Kernel...\")" > ./out/package/META-INF/com/google/android/updater-script
-          echo "package_extract_file(\"boot/Image.gz-dtb\", \"/dev/block/bootdevice/by-name/boot\");" >> ./out/package/META-INF/com/google/android/updater-script
-          echo "package_extract_dir(\"system/lib/modules\", \"/system/lib/modules\");" >> ./out/package/META-INF/com/google/android/updater-script
-          echo "package_extract_dir(\"dtb\", \"/dtb\");" >> ./out/package/META-INF/com/google/android/updater-script
-          echo "ui_print(\"Kernel installation completed!\")" >> ./out/package/META-INF/com/google/android/updater-script
-
-      # Step 11: Create the flashable ZIP file
-      - name: Create the flashable ZIP
-        run: |
-          cd ./out/package
-          zip -r9 kernel_with_kernelsu.zip *  # Create the final flashable ZIP
-
-      # Step 12: Upload the flashable ZIP as an artifact
-      - name: Upload flashable ZIP as artifact
-        uses: actions/upload-artifact@v2
+      - name: Upload Artifacts
+        if: matrix.job == 'create_artifacts'
+        uses: actions/upload-artifact@v4
         with:
-          name: kernel_flashable_zip
-          path: ./out/package/kernel_with_kernelsu.zip
+          name: KernelSU-${{ env.DEVICE_NAME }}-${{ env.KernelSU_VERSION }}
+          path: |
+            boot/boot.img
+            KernelSU-${{ env.DEVICE_NAME
