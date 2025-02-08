@@ -13,12 +13,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout code from repository
+      # Step 1: Checkout the repository code
       - name: Checkout code
         uses: actions/checkout@v2
 
-      # Step 2: Set up the environment (install dependencies)
-      - name: Set up environment
+      # Step 2: Set up the build environment (install dependencies)
+      - name: Set up build environment
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -35,61 +35,59 @@ jobs:
             python3-pip \
             curl
 
-      # Step 3: Clone the KernelSU repository
-      - name: Clone KernelSU
+      # Step 3: Clone KernelSU repository
+      - name: Clone KernelSU repository
         run: |
           git clone https://github.com/kernelex/kernelSU.git
           cd kernelSU
-          git checkout master  # You can change this to another branch if you prefer
+          git checkout master  # You can change this to another branch if needed
 
-      # Step 4: Set up KernelSU in your kernel directory
-      - name: Set up KernelSU in kernel directory
+      # Step 4: Set up KernelSU in the kernel source directory
+      - name: Set up KernelSU in kernel source directory
         run: |
           cd android_kernel_xiaomi_mt6877
-          cp -r ../kernelSU/* .  # Copy all KernelSU files into the kernel source directory
+          cp -r ../kernelSU/* .  # Copy KernelSU files into the kernel source tree
 
-      # Step 5: Configure the kernel (using defconfig or your custom config)
-      - name: Configure Kernel
+      # Step 5: Configure the kernel
+      - name: Configure kernel
         run: |
           cd android_kernel_xiaomi_mt6877
-          make ARCH=arm64 defconfig  # You can specify your own defconfig file if needed
+          make ARCH=arm64 defconfig  # Use the appropriate defconfig file if necessary
 
-      # Step 6: Apply KernelSU Configuration to the kernel
-      - name: Apply KernelSU Configuration
+      # Step 6: Enable KernelSU in kernel configuration
+      - name: Enable KernelSU in kernel config
         run: |
           cd android_kernel_xiaomi_mt6877
           echo "CONFIG_KERNEL_SU=y" >> .config  # Enable KernelSU in the kernel config
 
       # Step 7: Compile the kernel
-      - name: Compile Kernel
+      - name: Compile kernel
         run: |
           cd android_kernel_xiaomi_mt6877
-          make ARCH=arm64 -j$(nproc)  # Adjust this command based on your architecture
+          make ARCH=arm64 -j$(nproc)  # Adjust based on your architecture (e.g., arm64)
 
       # Step 8: Prepare the kernel image and modules for TWRP flashable ZIP
-      - name: Prepare Kernel Image and Modules
+      - name: Prepare kernel image and modules
         run: |
           cd android_kernel_xiaomi_mt6877
           make ARCH=arm64 INSTALL_MOD_PATH=./out modules
           make ARCH=arm64 INSTALL_MOD_PATH=./out dtbs
 
-      # Step 9: Create the required directory structure for TWRP flashable ZIP
-      - name: Prepare Flashable ZIP Directories
+      # Step 9: Create TWRP flashable ZIP structure
+      - name: Create directories for TWRP flashable ZIP
         run: |
-          # Create the necessary directories for the TWRP flashable ZIP
           mkdir -p ./out/package/system/lib/modules
           mkdir -p ./out/package/boot
           mkdir -p ./out/package/dtb
 
-          # Copy kernel image, modules, and dtbs into the package
+          # Copy kernel image, modules, and device tree to the package
           cp android_kernel_xiaomi_mt6877/arch/arm64/boot/Image.gz-dtb ./out/package/boot/
           cp -r android_kernel_xiaomi_mt6877/out/lib/modules/* ./out/package/system/lib/modules/
           cp -r android_kernel_xiaomi_mt6877/arch/arm64/boot/dts/* ./out/package/dtb/
 
-      # Step 10: Create the TWRP updater script
-      - name: Create Update Script for TWRP
+      # Step 10: Create TWRP updater script
+      - name: Create updater script for TWRP
         run: |
-          # Create the TWRP updater script that tells TWRP how to flash the kernel, modules, and dtb
           echo "ui_print(\"Installing Kernel...\")" > ./out/package/META-INF/com/google/android/updater-script
           echo "package_extract_file(\"boot/Image.gz-dtb\", \"/dev/block/bootdevice/by-name/boot\");" >> ./out/package/META-INF/com/google/android/updater-script
           echo "package_extract_dir(\"system/lib/modules\", \"/system/lib/modules\");" >> ./out/package/META-INF/com/google/android/updater-script
@@ -97,13 +95,13 @@ jobs:
           echo "ui_print(\"Kernel installation completed!\")" >> ./out/package/META-INF/com/google/android/updater-script
 
       # Step 11: Create the flashable ZIP file
-      - name: Create Flashable ZIP
+      - name: Create the flashable ZIP
         run: |
           cd ./out/package
           zip -r9 kernel_with_kernelsu.zip *  # Create the final flashable ZIP
 
       # Step 12: Upload the flashable ZIP as an artifact
-      - name: Upload Flashable ZIP
+      - name: Upload flashable ZIP as artifact
         uses: actions/upload-artifact@v2
         with:
           name: kernel_flashable_zip
