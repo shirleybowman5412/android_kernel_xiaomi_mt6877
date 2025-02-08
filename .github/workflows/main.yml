@@ -1,0 +1,94 @@
+name: Build Kernel with KernelSU (TWRP Flashable ZIP)
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            bc \
+            libncurses5-dev \
+            libssl-dev \
+            libelf-dev \
+            bison \
+            flex \
+            git \
+            wget \
+            python3 \
+            python3-pip \
+            curl
+
+      - name: Clone KernelSU
+        run: |
+          git clone https://github.com/kernelex/kernelSU.git
+          cd kernelSU
+          git checkout master
+
+      - name: Set up KernelSU in kernel directory
+        run: |
+          cd android_kernel_xiaomi_mt6877
+          cp -r ../kernelSU/* .
+
+      - name: Configure Kernel
+        run: |
+          cd android_kernel_xiaomi_mt6877
+          make ARCH=arm64 defconfig
+
+      - name: Apply KernelSU Configuration
+        run: |
+          cd android_kernel_xiaomi_mt6877
+          echo "CONFIG_KERNEL_SU=y" >> .config
+
+      - name: Compile Kernel
+        run: |
+          cd android_kernel_xiaomi_mt6877
+          make ARCH=arm64 -j$(nproc)
+
+      - name: Package Kernel Image and Modules
+        run: |
+          cd android_kernel_xiaomi_mt6877
+          make ARCH=arm64 INSTALL_MOD_PATH=./out modules
+          make ARCH=arm64 INSTALL_MOD_PATH=./out dtbs
+
+      - name: Prepare Flashable ZIP Directories
+        run: |
+          mkdir -p ./out/package/system/lib/modules
+          mkdir -p ./out/package/boot
+          mkdir -p ./out/package/dtb
+          cp android_kernel_xiaomi_mt6877/arch/arm64/boot/Image.gz-dtb ./out/package/boot/
+          cp -r android_kernel_xiaomi_mt6877/out/lib/modules/* ./out/package/system/lib/modules/
+          cp -r android_kernel_xiaomi_mt6877/arch/arm64/boot/dts/* ./out/package/dtb/
+
+      - name: Create Update Script for TWRP
+        run: |
+          echo "ui_print(\"Installing Kernel...\")" > ./out/package/META-INF/com/google/android/updater-script
+          echo "package_extract_file(\"boot/Image.gz-dtb\", \"/dev/block/bootdevice/by-name/boot\");" >> ./out/package/META-INF/com/google/android/updater-script
+          echo "package_extract_dir(\"system/lib/modules\", \"/system/lib/modules\");" >> ./out/package/META-INF/com/google/android/updater-script
+          echo "package_extract_dir(\"dtb\", \"/dtb\");" >> ./out/package/META-INF/com/google/android/updater-script
+          echo "ui_print(\"Kernel installation completed!\")" >> ./out/package/META-INF/com/google/android/updater-script
+
+      - name: Create Flashable ZIP
+        run: |
+          cd ./out/package
+          zip -r9 kernel_with_kernelsu.zip *
+
+      - name: Upload Flashable ZIP
+        uses: actions/upload-artifact@v2
+        with:
+          name: kernel_flashable_zip
+          path: ./out/package/kernel_with_kernelsu.zip
